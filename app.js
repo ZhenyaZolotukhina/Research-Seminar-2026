@@ -32,9 +32,8 @@ function setBusy(isBusy, message = "Working…") {
   const busy = $("busy");
   const btn = $("analyzeBtn");
   busy.style.display = isBusy ? "inline-flex" : "none";
-  busy.querySelector("span")?.remove?.(); // no-op safety
-  busy.childNodes.forEach(() => {}); // keep structure intact
   btn.disabled = isBusy || !sentimentPipeline || reviews.length === 0;
+
   if (isBusy) {
     busy.innerHTML = `<i class="fa-solid fa-spinner"></i> ${escapeHtml(message)}`;
   }
@@ -43,7 +42,6 @@ function setBusy(isBusy, message = "Working…") {
 function setStatus(text, kind = "info") {
   const dot = $("statusDot");
   const statusText = $("statusText");
-
   statusText.textContent = text;
 
   dot.classList.remove("ready", "warn", "err");
@@ -77,17 +75,20 @@ function escapeHtml(str) {
     .replaceAll(">", "&gt;");
 }
 
-// ---- Reviews TSV loading ----
+// ---- Reviews TSV loading and parsing ----
 async function loadReviews() {
   setStatus("Loading reviews TSV…", "info");
+
   try {
-    const res = await fetch(endpoint, {
-    method: "POST",
-    mode: "no-cors",
-    headers: { "Content-Type": "text/plain;charset=utf-8" },
-    body: JSON.stringify(payload),
-    cache: "no-store",
-      });
+    const res = await fetch(TSV_PATH, { cache: "no-store" });
+    if (!res.ok) throw new Error(`Failed to fetch ${TSV_PATH}: ${res.status} ${res.statusText}`);
+    const tsvText = await res.text();
+
+    const parsed = Papa.parse(tsvText, {
+      header: true,
+      delimiter: "\t",
+      skipEmptyLines: true,
+    });
 
     if (parsed.errors && parsed.errors.length > 0) {
       const first = parsed.errors[0];
@@ -120,11 +121,9 @@ async function initModel() {
   setStatus("Loading sentiment model… (first load can take a while)", "info");
 
   try {
-    // Some versions support progress_callback; safe to try.
     sentimentPipeline = await pipeline("text-classification", MODEL_ID, {
       progress_callback: (p) => {
         if (!p) return;
-        // p can be a string or object depending on implementation; keep it simple.
         const msg =
           typeof p === "string"
             ? p
@@ -138,7 +137,7 @@ async function initModel() {
     sentimentPipeline = null;
     setStatus("Model failed to load", "err");
     showError(
-      `Could not load the sentiment model in the browser. Check console for details and ensure your browser supports WebGPU/WebAssembly as needed.`,
+      "Could not load the sentiment model in the browser. Check the console for details.",
       err
     );
   }
@@ -152,11 +151,9 @@ function pickRandomReview() {
 }
 
 function normalizePipelineOutput(output) {
-  // Expected: [{label, score}, ...]
   if (Array.isArray(output) && output.length > 0 && output[0] && typeof output[0] === "object") {
     return output;
   }
-  // Some pipelines return nested arrays; handle [[{...}]]
   if (Array.isArray(output) && output.length > 0 && Array.isArray(output[0]) && output[0][0]) {
     return output[0];
   }
@@ -187,21 +184,16 @@ function setResultUI({ bucket, modelLabel, score, ms }) {
   const pct = Math.max(0, Math.min(1, Number(score) || 0)) * 100;
   $("confidencePct").textContent = `${pct.toFixed(1)}%`;
 
-  // Donut arc update
   updateDonut(pct / 100, bucket);
 
-  // Badge styling + icon
   const { icon, cls } = bucketToUI(bucket);
   badge.classList.remove("accentPos", "accentNeg", "accentNeu");
   badge.classList.add(cls);
 
   iconWrap.innerHTML = `<i class="fa-solid ${icon}"></i>`;
+  labelEl.textContent = `${bucket} (${pct.toFixed(1)}% confidence)`;
 
-  const niceLabel = bucket;
-  labelEl.textContent = `${niceLabel} (${pct.toFixed(1)}% confidence)`;
-
-  const detail = `Model: ${MODEL_ID} • Raw label: ${String(modelLabel)} • ${(ms ?? 0)} ms`;
-  metaEl.textContent = detail;
+  metaEl.textContent = `Model: ${MODEL_ID} • Raw label: ${String(modelLabel)} • ${ms} ms`;
 }
 
 function updateDonut(progress01, bucket) {
@@ -213,7 +205,6 @@ function updateDonut(progress01, bucket) {
   const gap = circumference - dash;
   arc.setAttribute("stroke-dasharray", `${dash.toFixed(2)} ${gap.toFixed(2)}`);
 
-  // Keep a subtle stroke color shift by sentiment via inline stroke with opacity (no hard-coded palette required)
   if (bucket === "POSITIVE") arc.setAttribute("stroke", "rgba(34,197,94,0.85)");
   else if (bucket === "NEGATIVE") arc.setAttribute("stroke", "rgba(239,68,68,0.85)");
   else arc.setAttribute("stroke", "rgba(163,163,163,0.75)");
@@ -245,7 +236,6 @@ async function analyzeRandomReview() {
     const raw = await sentimentPipeline(review);
     const normalized = normalizePipelineOutput(raw);
 
-    // Take top result
     const top = normalized
       .slice()
       .sort((a, b) => (Number(b?.score) || 0) - (Number(a?.score) || 0))[0];
@@ -255,21 +245,19 @@ async function analyzeRandomReview() {
     }
 
     const bucket = mapToBucket(top.label, top.score);
-    const dt = Math.round(performance.now() - t0);
+    const ms = Math.round(performance.now() - t0);
 
-    setResultUI({ bucket, modelLabel: top.label, score: top.score, ms: dt });
+    setResultUI({ bucket, modelLabel: top.label, score: top.score, ms });
 
-    // Update session distribution and chart
     sessionCounts[bucket] += 1;
     drawDistributionChart();
     updateChartFooter();
 
-    // Optional: log to Google Sheet
     await maybeLogToSheet({
       ts_iso: new Date().toISOString(),
       review,
       sentiment: `${bucket} (${(top.score * 100).toFixed(1)}%)`,
-      meta: buildMeta({ bucket, modelLabel: top.label, score: top.score, ms: dt }),
+      meta: buildMeta({ bucket, modelLabel: top.label, score: top.score, ms }),
     });
   } catch (err) {
     showError("Analysis failed. Please try again (and check the console for details).", err);
@@ -289,7 +277,6 @@ function drawDistributionChart() {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
-  // HiDPI scaling
   const cssWidth = canvas.clientWidth || 900;
   const cssHeight = canvas.clientHeight || 280;
   const dpr = window.devicePixelRatio || 1;
@@ -300,12 +287,8 @@ function drawDistributionChart() {
   const w = cssWidth;
   const h = cssHeight;
 
-  // Background
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "rgba(0,0,0,0.0)";
-  ctx.fillRect(0, 0, w, h);
 
-  // Values
   const labels = ["POSITIVE", "NEUTRAL", "NEGATIVE"];
   const values = [sessionCounts.POSITIVE, sessionCounts.NEUTRAL, sessionCounts.NEGATIVE];
   const maxV = Math.max(1, ...values);
@@ -314,7 +297,6 @@ function drawDistributionChart() {
   const innerW = w - padding.left - padding.right;
   const innerH = h - padding.top - padding.bottom;
 
-  // Grid lines
   ctx.strokeStyle = "rgba(255,255,255,0.10)";
   ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) {
@@ -328,7 +310,6 @@ function drawDistributionChart() {
   const barGap = 22;
   const barW = (innerW - barGap * (labels.length - 1)) / labels.length;
 
-  // Bars (subtle gradient per bar)
   labels.forEach((lab, i) => {
     const v = values[i];
     const x = padding.left + i * (barW + barGap);
@@ -347,7 +328,6 @@ function drawDistributionChart() {
       grad.addColorStop(1, "rgba(163,163,163,0.14)");
     }
 
-    // Rounded rect bar
     roundRect(ctx, x, y, barW, barH, 12);
     ctx.fillStyle = grad;
     ctx.fill();
@@ -357,14 +337,12 @@ function drawDistributionChart() {
     roundRect(ctx, x, y, barW, barH, 12);
     ctx.stroke();
 
-    // Value label above
     ctx.fillStyle = "rgba(255,255,255,0.85)";
     ctx.font = "700 13px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
     ctx.textAlign = "center";
     ctx.textBaseline = "bottom";
     ctx.fillText(String(v), x + barW / 2, y - 6);
 
-    // Category label below
     ctx.fillStyle = "rgba(255,255,255,0.65)";
     ctx.font = "650 12px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial";
     ctx.textBaseline = "top";
@@ -383,19 +361,18 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// ---- Logging to Google Sheet (optional) ----
+// ---- Logging ----
 function getOrCreateUserId() {
   const existing = localStorage.getItem(STORAGE_KEYS.userId);
   if (existing) return existing;
 
-  // Simple random ID (not PII)
   const id = `u_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
   localStorage.setItem(STORAGE_KEYS.userId, id);
   return id;
 }
 
 function buildMeta(extra = {}) {
-  const meta = {
+  return {
     userId: getOrCreateUserId(),
     page: location.href,
     referrer: document.referrer || "",
@@ -407,7 +384,6 @@ function buildMeta(extra = {}) {
     app: { name: "review-sentiment-explorer", version: "1.0.0" },
     ...extra,
   };
-  return meta;
 }
 
 function isLoggingEnabled() {
@@ -423,34 +399,31 @@ async function maybeLogToSheet({ ts_iso, review, sentiment, meta }) {
   const endpoint = getLogEndpoint();
   if (!endpoint) return;
 
-  // Payload matches required columns (Timestamp, Review, Sentiment, Meta)
-  const payload = {
-    timestamp: ts_iso,
-    review,
-    sentiment,
-    meta, // object; Apps Script can stringify it
-  };
+  const payload = { timestamp: ts_iso, review, sentiment, meta };
+  const body = JSON.stringify(payload);
 
   try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      mode: "cors",
-      cache: "no-store",
-    });
-
-    // Apps Script often returns 200 with a JSON body or plain text
-    if (!res.ok) {
-      throw new Error(`Logging failed: ${res.status} ${res.statusText}`);
+    if (navigator.sendBeacon) {
+      const ok = navigator.sendBeacon(
+        endpoint,
+        new Blob([body], { type: "text/plain;charset=utf-8" })
+      );
+      if (ok) return;
     }
+
+    await fetch(endpoint, {
+      method: "POST",
+      mode: "no-cors",
+      body,
+      cache: "no-store",
+      keepalive: true,
+    });
   } catch (err) {
-    // Logging should never break UX; just warn and continue.
     console.warn("Google Sheet logging error:", err);
   }
 }
 
-// ---- UI: logging controls ----
+// ---- Logging UI ----
 function syncLoggingUIFromStorage() {
   const sw = $("logSwitch");
   const endpoint = $("logEndpoint");
@@ -485,7 +458,7 @@ function attachLoggingHandlers() {
   });
 }
 
-// ---- Reset session ----
+// ---- Reset ----
 function resetSession() {
   sessionCounts.POSITIVE = 0;
   sessionCounts.NEGATIVE = 0;
@@ -517,7 +490,6 @@ async function bootstrap() {
   attachLoggingHandlers();
   syncLoggingUIFromStorage();
 
-  // Initial visuals
   updateDonut(0, "NEUTRAL");
   drawDistributionChart();
   updateChartFooter();
@@ -525,19 +497,14 @@ async function bootstrap() {
   $("analyzeBtn").addEventListener("click", analyzeRandomReview);
   $("resetBtn").addEventListener("click", resetSession);
 
-  // Load reviews + model (sequential messages, but can be parallel)
   await loadReviews();
   await initModel();
   updateAnalyzeButtonState();
 
-  // If one loaded but not the other, show a warning state
   if (reviews.length === 0 || !sentimentPipeline) {
     setStatus("Ready with issues (see error message)", "warn");
   }
 }
 
 document.addEventListener("DOMContentLoaded", bootstrap);
-window.addEventListener("resize", () => {
-  // Redraw chart on resize for crispness
-  drawDistributionChart();
-});
+window.addEventListener("resize", drawDistributionChart);
