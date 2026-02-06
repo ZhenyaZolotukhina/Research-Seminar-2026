@@ -15,8 +15,6 @@
   <style>
     :root{
       --bg: #0b1020;
-      --card: rgba(255,255,255,0.07);
-      --card2: rgba(255,255,255,0.05);
       --text: rgba(255,255,255,0.92);
       --muted: rgba(255,255,255,0.68);
       --line: rgba(255,255,255,0.14);
@@ -357,14 +355,6 @@
       font-size: 13px;
       font-weight: 650;
     }
-    .toggle{
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      color: var(--muted);
-      font-size: 12px;
-      user-select: none;
-    }
 
     .switch{
       position: relative;
@@ -426,7 +416,6 @@
     </header>
 
     <div class="grid">
-      <!-- Left: Review + result -->
       <section class="card">
         <div class="head">
           <h2>Analyze a random review</h2>
@@ -484,7 +473,6 @@
         </div>
       </section>
 
-      <!-- Right: Logging settings -->
       <aside class="card">
         <div class="head">
           <h2>Google Sheet logging</h2>
@@ -493,10 +481,8 @@
           <div class="settings">
             <div class="toggleRow">
               <span>Enable logging</span>
-              <div class="toggle">
-                <div class="switch" id="logSwitch" role="switch" aria-checked="false" tabindex="0">
-                  <div class="knob"></div>
-                </div>
+              <div class="switch" id="logSwitch" role="switch" aria-checked="false" tabindex="0">
+                <div class="knob"></div>
               </div>
             </div>
 
@@ -516,7 +502,7 @@
             </div>
 
             <div class="foot">
-              Note: This page is static. To write to Google Sheets, you must deploy a Google Apps Script as a Web App that accepts JSON POST and appends a row.
+              Logging requires a Google Apps Script Web App endpoint that appends rows into a Google Sheet.
             </div>
           </div>
         </div>
