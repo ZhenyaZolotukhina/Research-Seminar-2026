@@ -81,15 +81,13 @@ function escapeHtml(str) {
 async function loadReviews() {
   setStatus("Loading reviews TSV…", "info");
   try {
-    const res = await fetch(TSV_PATH, { cache: "no-store" });
-    if (!res.ok) throw new Error(`Failed to fetch ${TSV_PATH}: ${res.status} ${res.statusText}`);
-    const tsvText = await res.text();
-
-    const parsed = Papa.parse(tsvText, {
-      header: true,
-      delimiter: "\t",
-      skipEmptyLines: true,
-    });
+    const res = await fetch(endpoint, {
+    method: "POST",
+    mode: "no-cors",
+    headers: { "Content-Type": "text/plain;charset=utf-8" },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+      });
 
     if (parsed.errors && parsed.errors.length > 0) {
       const first = parsed.errors[0];
