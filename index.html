@@ -65,7 +65,7 @@
       color: var(--muted);
       font-size: 14px;
       line-height: 1.35;
-      max-width: 680px;
+      max-width: 720px;
     }
 
     .status{
@@ -205,6 +205,12 @@
       margin: 0;
       color: rgba(255,255,255,0.90);
     }
+    .reviewHint{
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.4;
+    }
 
     .resultTop{
       display: grid;
@@ -291,7 +297,16 @@
     .accentNeg{ border-color: rgba(239,68,68,0.35); background: rgba(239,68,68,0.10); }
     .accentNeu{ border-color: rgba(163,163,163,0.30); background: rgba(163,163,163,0.08); }
 
-    .mini{ margin-top: 14px; display: grid; gap: 12px; }
+    .accentPos .icon{ color: var(--pos); }
+    .accentNeg .icon{ color: var(--neg); }
+    .accentNeu .icon{ color: var(--neu); }
+
+    .mini{
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
 
     .chartWrap{
       border-radius: 14px;
@@ -301,9 +316,18 @@
     }
     canvas{ width: 100%; height: 160px; display: block; }
 
-    .settings{ display: grid; gap: 10px; }
-    .field{ display: grid; gap: 6px; }
-    label{ font-size: 12px; color: var(--muted); }
+    .settings{
+      display: grid;
+      gap: 10px;
+    }
+    .field{
+      display: grid;
+      gap: 6px;
+    }
+    label{
+      font-size: 12px;
+      color: var(--muted);
+    }
     input[type="text"]{
       width: 100%;
       border-radius: 12px;
@@ -314,6 +338,7 @@
       outline: none;
       font-size: 13px;
     }
+    input[type="text"]::placeholder{ color: rgba(255,255,255,0.38); }
 
     .toggleRow{
       display: flex;
@@ -377,8 +402,8 @@
       <div class="brand">
         <h1>Review Sentiment Explorer</h1>
         <p>
-          Loads <code>reviews_test.tsv</code> locally, picks a random review, runs sentiment classification fully in the browser (Transformers.js),
-          and logs each click + result to Google Sheets via Apps Script.
+          Loads <code>reviews_test.tsv</code> locally, picks a random review, and runs sentiment classification fully in your browser with Transformers.js.
+          The page logs each request to Google Sheets (optional) as: <code>ts_iso, review, sentiment, meta</code>.
         </p>
       </div>
 
@@ -391,7 +416,6 @@
     </header>
 
     <div class="grid">
-      <!-- Left: Review + result -->
       <section class="card">
         <div class="head">
           <h2>Analyze a random review</h2>
@@ -405,7 +429,9 @@
 
         <div class="body">
           <div class="reviewBox" aria-live="polite">
-            <p class="reviewText" id="reviewText">Review will appear here after you click “Analyze random review”.</p>
+            <p class="reviewText" id="reviewText">
+              <span class="reviewHint">Review will appear here after you click “Analyze random review”.</span>
+            </p>
           </div>
 
           <div class="error" id="errorBox"></div>
@@ -447,7 +473,6 @@
         </div>
       </section>
 
-      <!-- Right: Logging settings -->
       <aside class="card">
         <div class="head">
           <h2>Google Sheet logging</h2>
@@ -467,14 +492,17 @@
             </div>
 
             <div class="field">
-              <label>Sheet columns (recommended)</label>
+              <label>Sheet columns we write</label>
               <div style="border:1px solid var(--line); background:rgba(0,0,0,0.18); border-radius:14px; padding:10px 12px; color:rgba(255,255,255,0.84); font-size:13px; line-height:1.4;">
-                ts_iso • event • variant • userId • review • sentiment • meta
+                1) <b>ts_iso</b> (timestamp)<br/>
+                2) <b>review</b> (randomly selected)<br/>
+                3) <b>sentiment</b> (label + confidence)<br/>
+                4) <b>meta</b> (client info JSON)
               </div>
             </div>
 
             <div class="foot">
-              Tip: In Google Sheets, set <b>Format → Wrapping → Wrap</b> for columns <code>review</code> and <code>meta</code>.
+              Tip: In Google Sheets, set column D (meta) to “Wrap” to see JSON easily.
             </div>
           </div>
         </div>
