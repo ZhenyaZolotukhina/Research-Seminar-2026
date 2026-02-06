@@ -394,15 +394,36 @@ function getLogEndpoint() {
   return (localStorage.getItem(STORAGE_KEYS.logEndpoint) || "").trim();
 }
 
+function hashString(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
 async function maybeLogToSheet({ ts_iso, review, sentiment, meta }) {
   if (!isLoggingEnabled()) return;
   const endpoint = getLogEndpoint();
   if (!endpoint) return;
 
-  const payload = { timestamp: ts_iso, review, sentiment, meta };
+  const userId = getOrCreateUserId();
+  const variant = (hashString(userId) % 2 === 0) ? "A" : "B";
+
+  const payload = {
+    ts_iso,
+    event: "cta_click",
+    variant,
+    userId,
+    meta: {
+      ...meta,
+      review,
+      sentiment,
+    },
+  };
+
   const body = JSON.stringify(payload);
 
   try {
+    // Best effort: no preflight, fire-and-forget
     if (navigator.sendBeacon) {
       const ok = navigator.sendBeacon(
         endpoint,
@@ -411,6 +432,7 @@ async function maybeLogToSheet({ ts_iso, review, sentiment, meta }) {
       if (ok) return;
     }
 
+    // Fallback: no-cors fetch (no headers)
     await fetch(endpoint, {
       method: "POST",
       mode: "no-cors",
