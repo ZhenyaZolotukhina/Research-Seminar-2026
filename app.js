@@ -373,7 +373,6 @@ function getOrCreateUserId() {
 
 function buildMeta(extra = {}) {
   return {
-    userId: getOrCreateUserId(),
     page: location.href,
     referrer: document.referrer || "",
     userAgent: navigator.userAgent,
