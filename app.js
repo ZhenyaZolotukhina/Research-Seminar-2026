@@ -2,17 +2,23 @@
 import { pipeline } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.7.6/dist/transformers.min.js";
 
 /**
- * Fully static, client-side sentiment analyzer:
- * - Loads reviews_test.tsv via fetch
+ * Fully static, client-side sentiment analyzer + logger:
+ * - Loads reviews_test.tsv via fetch (same folder as index.html)
  * - Parses TSV with Papa Parse (global Papa from index.html)
- * - Runs sentiment classification in-browser using Transformers.js pipeline
- * - Logs each click+result to Google Sheets via Apps Script Web App endpoint (optional)
- * - Visualizes confidence (donut) and session distribution (canvas)
+ * - Runs sentiment classification fully in-browser using Transformers.js
+ * - Optional: logs each analysis to Google Sheets via an Apps Script Web App endpoint
+ *
+ * Logging columns (exact):
+ * 1) ts_iso
+ * 2) review
+ * 3) sentiment (label + confidence)
+ * 4) meta (JSON containing client info + model details)
  */
 
 const MODEL_ID = "Xenova/distilbert-base-uncased-finetuned-sst-2-english";
 const TSV_PATH = "reviews_test.tsv";
 
+// ---- Minimal shared state ----
 let reviews = [];
 let sentimentPipeline = null;
 
@@ -26,7 +32,7 @@ const STORAGE_KEYS = {
 
 const $ = (id) => document.getElementById(id);
 
-// ---------- UI helpers ----------
+// ---- UI helpers ----
 function setBusy(isBusy, message = "Working…") {
   const busy = $("busy");
   const btn = $("analyzeBtn");
@@ -73,7 +79,7 @@ function escapeHtml(str) {
     .replaceAll(">", "&gt;");
 }
 
-// ---------- TSV loading ----------
+// ---- Reviews loading ----
 async function loadReviews() {
   setStatus("Loading reviews TSV…", "info");
 
@@ -99,7 +105,7 @@ async function loadReviews() {
       .filter((t) => t.length > 0);
 
     if (texts.length === 0) {
-      throw new Error("No valid review texts found in TSV. Ensure it has a 'text' column.");
+      throw new Error("No valid review texts found. Ensure TSV has a 'text' column.");
     }
 
     reviews = texts;
@@ -108,16 +114,15 @@ async function loadReviews() {
     reviews = [];
     setStatus("Reviews failed to load", "err");
     showError(
-      `Could not load or parse ${TSV_PATH}. Make sure the file exists next to index.html and contains a 'text' column.`,
+      `Could not load or parse ${TSV_PATH}. Make sure it exists next to index.html and contains a 'text' column.`,
       err
     );
   }
 }
 
-// ---------- Model init ----------
+// ---- Model init ----
 async function initModel() {
   setStatus("Loading sentiment model… (first load can take a while)", "info");
-
   try {
     sentimentPipeline = await pipeline("text-classification", MODEL_ID, {
       progress_callback: (p) => {
@@ -134,11 +139,11 @@ async function initModel() {
   } catch (err) {
     sentimentPipeline = null;
     setStatus("Model failed to load", "err");
-    showError("Could not load the sentiment model in the browser. Check the console for details.", err);
+    showError("Could not load the sentiment model in the browser. Check console for details.", err);
   }
 }
 
-// ---------- Sentiment ----------
+// ---- Sentiment analysis ----
 function pickRandomReview() {
   if (!reviews.length) return null;
   return reviews[Math.floor(Math.random() * reviews.length)] || null;
@@ -154,12 +159,11 @@ function normalizePipelineOutput(output) {
   throw new Error("Unexpected pipeline output format.");
 }
 
-function mapToBucket(label, score) {
-  const L = String(label || "").toUpperCase();
-  const s = Number(score);
-
-  if (L === "POSITIVE" && s > 0.5) return "POSITIVE";
-  if (L === "NEGATIVE" && s > 0.5) return "NEGATIVE";
+function mapToBucket(topLabel, topScore) {
+  const label = String(topLabel || "").toUpperCase();
+  const score = Number(topScore);
+  if (label === "POSITIVE" && score > 0.5) return "POSITIVE";
+  if (label === "NEGATIVE" && score > 0.5) return "NEGATIVE";
   return "NEUTRAL";
 }
 
@@ -186,6 +190,7 @@ function setResultUI({ bucket, modelLabel, score, ms }) {
 
   iconWrap.innerHTML = `<i class="fa-solid ${icon}"></i>`;
   labelEl.textContent = `${bucket} (${pct.toFixed(1)}% confidence)`;
+
   metaEl.textContent = `Model: ${MODEL_ID} • Raw label: ${String(modelLabel)} • ${ms} ms`;
 }
 
@@ -206,11 +211,20 @@ function updateDonut(progress01, bucket) {
 async function analyzeRandomReview() {
   clearError();
 
-  if (!sentimentPipeline) return showError("Sentiment model is not ready yet. Please wait.");
-  if (!reviews.length) return showError("No reviews loaded. Check reviews_test.tsv.");
+  if (!sentimentPipeline) {
+    showError("Sentiment model is not ready yet. Please wait for it to finish loading.");
+    return;
+  }
+  if (!reviews.length) {
+    showError("No reviews are loaded. Please check reviews_test.tsv and reload the page.");
+    return;
+  }
 
   const review = pickRandomReview();
-  if (!review) return showError("Could not pick a review. Check TSV content.");
+  if (!review) {
+    showError("Could not pick a review. Please check the TSV content.");
+    return;
+  }
 
   setReviewText(review);
   setBusy(true, "Analyzing…");
@@ -225,12 +239,11 @@ async function analyzeRandomReview() {
       .sort((a, b) => (Number(b?.score) || 0) - (Number(a?.score) || 0))[0];
 
     if (!top || typeof top.label !== "string" || typeof top.score !== "number") {
-      throw new Error("Invalid classification result.");
+      throw new Error("Invalid top classification result.");
     }
 
     const bucket = mapToBucket(top.label, top.score);
     const ms = Math.round(performance.now() - t0);
-    const sentiment = `${bucket} (${(top.score * 100).toFixed(1)}%)`;
 
     setResultUI({ bucket, modelLabel: top.label, score: top.score, ms });
 
@@ -238,21 +251,28 @@ async function analyzeRandomReview() {
     drawDistributionChart();
     updateChartFooter();
 
-    await logEvent({
-      event: "sentiment_analysis",
-      review,
-      sentiment,
-      extraMeta: { bucket, modelLabel: top.label, score: top.score, ms },
-    });
+    const sentimentStr = `${bucket} (${(top.score * 100).toFixed(1)}%)`;
 
+    // ✅ REQUIRED LOGGING COLUMNS:
+    await maybeLogToSheet({
+      ts_iso: new Date().toISOString(),
+      review,
+      sentiment: sentimentStr,
+      meta: buildMeta({
+        bucket,
+        modelLabel: top.label,
+        score: top.score,
+        ms,
+      }),
+    });
   } catch (err) {
-    showError("Analysis failed. Please try again (check console).", err);
+    showError("Analysis failed. Please try again (and check the console for details).", err);
   } finally {
     setBusy(false);
   }
 }
 
-// ---------- Chart ----------
+// ---- Session chart (canvas) ----
 function updateChartFooter() {
   $("chartFoot").textContent =
     `POSITIVE: ${sessionCounts.POSITIVE} • NEGATIVE: ${sessionCounts.NEGATIVE} • NEUTRAL: ${sessionCounts.NEUTRAL}`;
@@ -347,13 +367,30 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// ---------- Logging helpers ----------
+// ---- Logging (required columns: ts_iso, review, sentiment, meta) ----
 function getOrCreateUserId() {
   const existing = localStorage.getItem(STORAGE_KEYS.userId);
   if (existing) return existing;
+
   const id = `u_${Math.random().toString(16).slice(2)}_${Date.now().toString(16)}`;
   localStorage.setItem(STORAGE_KEYS.userId, id);
   return id;
+}
+
+function buildMeta(extra = {}) {
+  // "meta includes all information from the client"
+  return {
+    userId: getOrCreateUserId(),
+    page: location.href,
+    referrer: document.referrer || "",
+    userAgent: navigator.userAgent,
+    language: navigator.language || "",
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+    screen: { w: window.screen.width, h: window.screen.height, dpr: window.devicePixelRatio || 1 },
+    model: MODEL_ID,
+    app: { name: "review-sentiment-explorer", version: "1.0.0" },
+    ...extra,
+  };
 }
 
 function isLoggingEnabled() {
@@ -364,58 +401,25 @@ function getLogEndpoint() {
   return (localStorage.getItem(STORAGE_KEYS.logEndpoint) || "").trim();
 }
 
-function hashString(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return h;
-}
-
-function buildMeta(extra = {}) {
-  return {
-    page: location.href,
-    referrer: document.referrer || "",
-    userAgent: navigator.userAgent,
-    language: navigator.language || "",
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-    screen: { w: window.screen.width, h: window.screen.height, dpr: window.devicePixelRatio || 1 },
-    model: MODEL_ID,
-    app: { name: "review-sentiment-explorer", version: "2.0.0" },
-    ...extra,
-  };
-}
-
-/**
- * Logs one row to Google Sheets via Apps Script:
- * Columns: ts_iso, event, variant, userId, review, sentiment, meta
- */
-async function logEvent({ event, review, sentiment, extraMeta = {} }) {
+async function maybeLogToSheet({ ts_iso, review, sentiment, meta }) {
   if (!isLoggingEnabled()) return;
   const endpoint = getLogEndpoint();
   if (!endpoint) return;
 
-  const userId = getOrCreateUserId();
-  const variant = (hashString(userId) % 2 === 0) ? "A" : "B";
-
-  const payload = {
-    ts_iso: new Date().toISOString(),
-    event,
-    variant,
-    userId,
-    review,
-    sentiment,
-    meta: buildMeta(extraMeta),
-  };
-
+  const payload = { ts_iso, review, sentiment, meta };
   const body = JSON.stringify(payload);
 
   try {
-    // Prefer sendBeacon: avoids CORS preflight issues
+    // Prefer sendBeacon to avoid preflight / CORS issues.
     if (navigator.sendBeacon) {
-      const ok = navigator.sendBeacon(endpoint, new Blob([body], { type: "text/plain;charset=utf-8" }));
+      const ok = navigator.sendBeacon(
+        endpoint,
+        new Blob([body], { type: "text/plain;charset=utf-8" })
+      );
       if (ok) return;
     }
 
-    // Fallback: no-cors fetch with no custom headers
+    // Fallback: no-cors fetch without headers to avoid preflight.
     await fetch(endpoint, {
       method: "POST",
       mode: "no-cors",
@@ -428,7 +432,7 @@ async function logEvent({ event, review, sentiment, extraMeta = {} }) {
   }
 }
 
-// ---------- Logging UI ----------
+// ---- Logging UI ----
 function syncLoggingUIFromStorage() {
   const sw = $("logSwitch");
   const endpoint = $("logEndpoint");
@@ -463,7 +467,7 @@ function attachLoggingHandlers() {
   });
 }
 
-// ---------- Reset ----------
+// ---- Reset ----
 function resetSession() {
   sessionCounts.POSITIVE = 0;
   sessionCounts.NEGATIVE = 0;
@@ -485,11 +489,11 @@ function resetSession() {
   clearError();
 }
 
-// ---------- Bootstrap ----------
 function updateAnalyzeButtonState() {
   $("analyzeBtn").disabled = !(sentimentPipeline && reviews.length > 0);
 }
 
+// ---- Bootstrap ----
 async function bootstrap() {
   attachLoggingHandlers();
   syncLoggingUIFromStorage();
